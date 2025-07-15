@@ -1,0 +1,10 @@
+grid_rows: 3
+grid_cols: 3
+cell_radius: 0.5
+total_users: 100
+total_uavs: 2
+user_rate_range:
+- 0.5
+- 5.0
+max_episodes: 100
+max_timesteps_per_episode: 500
