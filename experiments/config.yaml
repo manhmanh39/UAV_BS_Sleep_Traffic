@@ -1,0 +1,47 @@
+# downlink UAV environment config
+
+# Grid configuration
+grid_rows: 3
+grid_cols: 3
+cell_radius: 50.0  # cell radius in meters (increased for realistic cellular network)
+
+# User configuration
+total_users: 100
+user_rate_range: [0.5, 5.0]  # User rate requirements in Mbps
+
+# UAV configuration
+total_uavs: 2
+uav_altitude: 50.0  # Fixed altitude in meters
+max_speed: 20.0  # Maximum UAV speed in m/s
+max_power: 1.0  # Maximum transmission power in Watts
+
+# Episode configuration
+max_episodes: 100
+max_timesteps_per_episode: 500
+
+# Communication parameters
+bandwidth: 20000000  # 20 MHz bandwidth in Hz
+noise_power: 1e-13  # Noise power in Watts
+path_loss_reference: 20  # Reference path loss at 1m in dB
+path_loss_exponent: 2.0  # Path loss exponent
+
+# Energy model parameters
+propulsion_alpha1: 0.5  # Quadratic propulsion coefficient
+propulsion_alpha2: 0.1  # Linear propulsion coefficient
+time_step: 1.0  # Time step duration in seconds
+
+# Reward function weights
+coverage_weight: 10.0  # w1 - Coverage priority weight
+energy_weight: 1.0     # w2 - Energy penalty weight
+
+# MADDPG training parameters
+learning_rate_actor: 0.0001
+learning_rate_critic: 0.001
+batch_size: 64
+memory_size: 100000
+tau: 0.01  # Soft update parameter
+gamma: 0.99  # Discount factor
+noise_std: 0.1  # Exploration noise standard deviation
+
+# Environment bounds (automatically calculated based on grid)
+# These will be set by the environment based on grid configuration
