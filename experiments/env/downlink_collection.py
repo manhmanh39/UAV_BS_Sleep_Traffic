@@ -5,6 +5,7 @@ import yaml
 # from pympler import tracker
 from gym import spaces
 import pandas as pd
+import ast
 
 def load_config(path):
     with open(path, 'r') as f:
@@ -21,66 +22,148 @@ class DownlinkEnv(object):
         self.grid_cols = self.config['grid_cols']
         self.cell_radius = self.config['cell_radius']
         self.max_timesteps = self.config['max_timesteps_per_episode']
+        self.total_users = self.config['total_users']
+        self.user_rate_range = self.config['user_rate_range']
 
         # load data
         self.traffic = pd.read_csv(data_dir + 'traffic.csv')
         self.bs_info = pd.read_csv(data_dir + 'bs_info.csv')
+        self.bs_positions = self.bs_info[['x_pos', 'y_pos']].values
         self.episodes = pd.read_csv(data_dir + 'episodes.csv')
 
+        #operational area bounds
+        self.area_bounds = {
+            'x_min': np.min(self.bs_positions[:, 0]) - self.cell_radius,
+            'x_max': np.max(self.bs_positions[:, 0]) + self.cell_radius,
+            'y_min': np.min(self.bs_positions[:, 1]) - self.cell_radius,
+            'y_max': np.max(self.bs_positions[:, 1]) + self.cell_radius
+        }
 
-        # uavs
-        self.n = self.sg.V['NUM_UAV']
-        self.observation_space = [spaces.Box(low=-1, high=1, shape=(self.map.width, self.map.height, self.channel)) for
-                                  i in range(self.n)]
-        self.action_space = [spaces.Box(low=-1, high=1, shape=(self.sg.V['NUM_ACTION'],)) for i in range(self.n)]
-        self.maxenergy = self.sg.V['MAX_ENERGY']
-        self.crange = self.sg.V['RANGE']
-        self.maxdistance = self.sg.V['MAXDISTANCE']
-        self.cspeed = np.float16(self.sg.V['COLLECTION_PROPORTION'])
-        self.alpha = self.sg.V['ALPHA']
-        self.track = 1. / 1000.
-        # ---- 6-8 14:48 add factor
-        self.factor = self.sg.V['FACTOR']
-        # ----
-        # self.beta = self.sg.V['BETA']
-        self.epsilon = self.sg.V['EPSILON']
-        self.normalize = self.sg.V['NORMALIZE']
-        # obstacles
-        self.OB = 1
-        self.mapob = np.zeros((self.mapx, self.mapy)).astype(np.int8)
-        obs = self.sg.V['OBSTACLE']
-        for i in obs:
-            for x in range(i[0], i[0] + i[2], 1):
-                for y in range(i[1], i[1] + i[3], 1):
-                    self.mapob[x][y] = self.OB
-        # reward
-        self.pwall = self.sg.V['WALL_REWARD']
-        self.rdata = self.sg.V['DATA_REWARD']
-        self.pstep = self.sg.V['WASTE_STEP']
+        self.user_info = pd.read_csv(data_dir + 'user_info.csv')
+        self.user_positions = self.user_info[['x_pos', 'y_pos']].values
+        self.user_demands = self.user_info['rate_requirement'].values
+        self.user_cell_assignment = self.user_info['home_cell'].values
 
-        test = []
-        self.DATAs = np.reshape(test, (-1, 3)).astype(np.float16)
-        for index in range(self.DATAs.shape[0]):
-            while self.mapob[myint(self.DATAs[index][0] * self.mapx)][
-                myint(self.DATAs[index][1] * self.mapy)] == self.OB:
-                self.DATAs[index] = np.random.rand(3).astype(np.float16)
-        self._mapmatrix = copy.copy(self.DATAs[:, 2])
-        self.datas = self.DATAs[:, 0:2] * self.mapx
-        self.totaldata = np.sum(self.DATAs[:, 2])
-        log.log(self.DATAs)
 
-        self._image_data = np.zeros((self.map.width, self.map.height)).astype(np.float16)
-        self._image_position = np.zeros((self.sg.V['NUM_UAV'], self.map.width, self.map.height)).astype(np.float16)
-        self.map.draw_wall(self._image_data)
-        for i, position in enumerate(self.datas):
-            self.map.draw_point(position[0], position[1], self._mapmatrix[i], self._image_data)
-        for obstacle in self.sg.V['OBSTACLE']:
-            self.map.draw_obstacle(obstacle[0], obstacle[1], obstacle[2], obstacle[3], self._image_data)
-        for i_n in range(self.n):
-            # layer 1
-            self.map.draw_UAV(self.sg.V['INIT_POSITION'][0], self.sg.V['INIT_POSITION'][1], 1.,
-                              self._image_position[i_n])
-        # self.tr.print_diff()
+        # system parameters
+        self.H = self.config['uav_altitude']  # height of UAVs
+        self.v_max = self.confid['max_speed'] # max speed of UAVs
+        self.P_max = self.config['max_power']  # max power of UAVs
+        self.dt = self.config['time_step']  # time step
+        self.B = self.config['bandwidth']  # bandwidth
+        self.sigma_squared = self.config['noise_power']  # noise power
+        self.PL_0 = self.config['path_loss_reference']  # path loss at reference distance
+        self.alpha_pl = self.config['path_loss_exponent']  # path loss exponent
+
+        #energy parameters
+        self.alpha1 = self.config['propulsion_alpha1']  
+        self.alpha2 = self.config['propulsion_alpha2']  
+
+        #reward parameters
+        self.w1 = self.config['coverage_weight'] #priority weight for coverage
+        self.w2 = self.config['energy_weight']
+
+        #energy normalization factor
+        self.E_max = self.P_max * self.dt + self.alpha1 * (self.v_max ** 2) + self.alpha2 * self.v_max 
+
+        #create grid for bs position (idf if needed)
+        #initialize user positions and requirement
+
+        #define action and observation spaces
+        #action space: [vx, vy, power]
+        self.action_space = [spaces.Box(low=np.array([-self.v_max, -self.v_max, 0]), 
+                                        high=np.array([self.v_max, self.v_max, self.P_max]), 
+                                        dtype=np.float32) for _ in range(self.n_uav)]
+        
+        # Observation: [own_pos(2), own_power(1), partner_pos(2), partner_power(1), 
+        #               user_positions(200), user_demands(100), bs_states(K)]
+        obs_dim = 2 + 1 + 2 + 1 + 200 + 100 + len(self.bs_info)
+        self.observation_space = [spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), 
+                                             dtype=np.float32)
+                                             for _ in range(self.n_uav)]
+
+        #initialize episode variables
+        self.current_episode = 0
+        self.timestep = 0
+
+    def _get_bs_state(self, episode_idx, timestep):
+        # Get the base station state for the given episode and timestep
+        episode_data = self.episodes[self.episodes['episode_id'] == episode_idx]
+        if len(episode_data) == 0:
+            #default state if no data found (all is on)
+            return np.ones(len(self.bs_info), dtype=int)  
+        
+        #get timestep data
+        timestep_data = episode_data[episode_data['timestep'] == timestep]
+        if len(timestep_data) == 0:
+            #default state if no data found (all is on)
+            return np.ones(len(self.bs_info), dtype=int)
+        
+        #extract bs states
+        if 'bs_status' in timestep_data.columns:
+            bs_states = timestep_data['bs_status'].values[0]
+            bs_states = ast.literal_eval(bs_states) 
+            return np.array(bs_states, dtype=int)
+        else:
+            raise ValueError("No 'bs_status' column in timestep data")
+        
+
+    def _calculate_distance(self, pos1, pos2):
+        """
+        Calculate the Euclidean distance between two positions.
+        :param pos1: First position (x, y).
+        :param pos2: Second position (x, y).
+        :return: Distance between pos1 and pos2.
+        """
+        return np.sqrt(np.sum(np.square(np.array(pos1) - np.array(pos2))))
+    
+    def _calculate_path_loss(self, distance_2d):
+        #log-distance path loss model with shadowing
+        distance_3d = np.sqrt(distance_2d ** 2 + self.H ** 2)
+        shadowing = np.random.normal(0, 6)  # up to 6db of shadowing
+        return self.PL_0 + 10 * self.alpha_pl * np.log10(distance_3d)
+    
+    def _calculate_sinr(self, uav_idx, user_idx, uav_positions, uav_powers):
+        user_pos = self.user_positions[user_idx]
+        uav_pos = uav_positions[uav_idx]
+
+        #pathloss_distance
+        distance_2d = self._calculate_distance(uav_pos, user_pos)
+        path_loss_db = self._calculate_path_loss(distance_2d)
+        path_loss_linear = 10 ** (path_loss_db / 10)
+
+        #signal power from the UAV
+        signal_power = uav_powers[uav_idx] / path_loss_linear
+
+        #interference from other UAVs
+        interference = 0
+        for other_uav in range(self.n_uav):
+            if other_uav != uav_idx:
+                other_distance_2d = self._calculate_distance(uav_positions[other_uav], user_pos)
+                other_path_loss_db = self._calculate_path_loss(other_distance_2d)
+                other_path_loss_linear = 10 ** (other_path_loss_db / 10)
+                interference += uav_powers[other_uav] / other_path_loss_linear
+
+        #interference from BSs
+        user_cell = self.user_cell_assignment[user_idx]
+        for bs_idx in range(self.bs_positions):
+            if self.bs_states[bs_idx] == 1: #bs on
+                bs_distance_2d = self._calculate_distance(self.bs_positions[bs_idx], user_pos)
+                bs_path_loss_db = self._calculate_path_loss(bs_distance_2d)
+                bs_path_loss_linear = 10 ** (bs_path_loss_db / 10)
+                #assume bs power is constant and equal to P_max
+                interference += self.P_max / bs_path_loss_linear
+
+        #calculate SINR
+        sinr = signal_power / (interference + self.sigma_squared)
+        return sinr
+
+    def _calculate_achievable_rate(self,uav_idx, user_idx, uav_positions, uav_powers):
+        sinr = self._calculate_sinr(uav_idx, user_idx, uav_positions, uav_powers)
+        if sinr <= 0:
+            return 0
+        return self.B * np.log2(1 + sinr)
+
 
     def reset(self):
         # initialize data map
@@ -115,162 +198,6 @@ class DownlinkEnv(object):
         # image = [np.reshape(np.array([self.image_data, self.image_position[i]]), (self.map.width, self.map.height, self.channel)) for i in range(self.n)]
         # tr.print_diff()
         return self.__get_state()
-
-    def __init_image(self):
-        self.image_data = copy.copy(self._image_data)
-        self.image_position = copy.copy(self._image_position)
-        # ---- or
-        # self.image_track = np.zeros(self.image_position.shape)
-        # ---- new 6-7-11-28
-        # self.image_track = np.ones(self.image_data.shape) * self.track
-        # ---- 18:43
-        self.image_track = np.zeros(self.image_position.shape)
-        # ----
-        state = []
-        for i in range(self.n):
-            image = np.zeros((self.map.width, self.map.height, self.channel)).astype(np.float16)
-            for width in range(image.shape[0]):
-                for height in range(image.shape[1]):
-                    image[width][height][0] = self.image_data[width][height]
-                    image[width][height][1] = self.image_position[i][width][height]
-                    # ---- new 6-7-11-28
-                    # image[width][height][2] = self.image_track[width][height]
-                    # ---- end new
-            state.append(image)
-        return state
-
-    def __draw_image(self, clear_uav, update_point, update_track):
-        for n in range(self.n):
-            for i, value in update_point:
-                self.map.draw_point(self.datas[i][0], self.datas[i][1], value, self.state[n][:, :, 0])
-            self.map.clear_uav(clear_uav[n][0], clear_uav[n][1], self.state[n][:, :, 1])
-            self.map.draw_UAV(self.uav[n][0], self.uav[n][1], self.energy[n] / self.maxenergy, self.state[n][:, :, 1])
-            # ---- draw track
-            for i, value in update_track:
-                # ---- or
-                self.map.draw_point(self.datas[i][0], self.datas[i][1], value, self.state[n][:, :, 2])
-                # ---- new 6-7 16:15
-                # self.map.draw_point(self.datas[i][0], self.datas[i][1], -1. * value, self.state[n][:,:,2])
-                # ---- end new
-
-    def __get_state(self):
-        return copy.deepcopy(self.state)
-
-    def __get_reward(self, value, distance):
-        return value
-
-    def __get_reward0(self, value, distance):
-        return value * self.rdata / (distance + 0.01)
-
-    def __get_reward1(self, value, distance):
-        alpha = self.alpha
-        return value * self.rdata / (distance + alpha * value + 0.01)
-
-    def __get_reward2(self, value, distance):
-        belta = 0.1  # * np.power(np.e, value)
-        return (value * self.rdata + belta) / (distance + self.alpha * value + 0.01)
-
-    def __get_reward3(self, value, distance):
-        belta = 0.1 * np.power(np.e, value)
-        return (value * self.rdata + belta) / (distance + self.alpha * value + 0.01)
-
-    def __get_reward4(self, value, distance):
-        if value != 0:
-            factor0 = value * self.rdata / (distance + self.alpha * value + self.epsilon)
-            # jain's fairness index
-            square_of_sum = np.square(np.sum(self.mapmatrix[:]))
-            sum_of_square = np.sum(np.square(self.mapmatrix[:]))
-            jain_fairness_index = square_of_sum / sum_of_square / float(len(self.mapmatrix))
-            return factor0 * jain_fairness_index
-        else:
-            return self.epsilon / (distance + self.epsilon)
-
-    def __get_reward5(self, value, distance, mapmatrix=None):
-        if mapmatrix is None:
-            if value != 0:
-                # print(value)
-                factor0 = value / (distance + self.alpha * value + self.epsilon)
-                # jain's fairness index
-                square_of_sum = np.square(np.sum(self.mapmatrix[:]))
-                sum_of_square = np.sum(np.square(self.mapmatrix[:]))
-                jain_fairness_index = square_of_sum / sum_of_square / float(len(self.mapmatrix))
-                return factor0 * jain_fairness_index
-            else:
-                return - 1. * self.normalize * distance
-        else:
-            if value != 0:
-                factor0 = value / (distance + self.alpha * value + self.epsilon)
-                # jain's fairness index
-                square_of_sum = np.square(np.sum(mapmatrix[:]))
-                sum_of_square = np.sum(np.square(mapmatrix[:]))
-                jain_fairness_index = square_of_sum / sum_of_square / float(len(mapmatrix))
-                return factor0 * jain_fairness_index
-            else:
-                return - 1. * self.normalize * distance
-
-    def __get_reward6(self, value, distance, mapmatrix=None):
-        if mapmatrix is None:
-            if value != 0:
-                # print(value)
-                factor0 = value / (distance + self.alpha * value + self.epsilon)
-                # jain's fairness index
-                collection = self._mapmatrix - self.mapmatrix
-                square_of_sum = np.square(np.sum(collection))
-                sum_of_square = np.sum(np.square(collection))
-                jain_fairness_index = square_of_sum / sum_of_square / float(len(collection))
-                return factor0 * jain_fairness_index
-            else:
-                return -1. * self.normalize * distance
-        else:
-            if value != 0:
-                factor0 = value / (distance + self.alpha * value + self.epsilon)
-                # jain's fairness index
-                collection = self._mapmatrix - mapmatrix
-                square_of_sum = np.square(np.sum(collection))
-                sum_of_square = np.sum(np.square(collection))
-                jain_fairness_index = square_of_sum / sum_of_square / float(len(collection))
-                return factor0 * jain_fairness_index
-            else:
-                return -1. * self.normalize * distance
-
-    def __get_reward7(self, value, distance, fairness, fairness_):
-        if value != 0:
-            factor0 = value / (distance + self.alpha * value + self.epsilon)
-            delta_fairness = fairness_ - fairness
-            # print(delta_fairness)
-            return factor0 * delta_fairness
-        else:
-            return -1. * self.normalize * distance
-
-    def __get_reward8(self, value, distance, fairness, fairness_):
-        if value != 0:
-            factor0 = value / (distance + self.alpha * value + self.epsilon)
-            delta_fairness = fairness_ - fairness
-            # print(delta_fairness)
-            return factor0 * delta_fairness
-        else:
-            return self.normalize * self.pstep
-
-    def __get_reward9(self, value, distance, fairness, fairness_):
-        if value != 0:
-            # ---- or
-            # factor0 = value / (distance + self.alpha * value + self.epsilon)
-            # ---- 6-8 14:48
-            factor0 = value / (self.factor * distance + self.alpha * value + self.epsilon)
-            # ----
-            # delta_fairness = np.fabs(fairness_ - fairness)
-            # print(delta_fairness)
-            return factor0 * fairness_
-        else:
-            return -1. * self.normalize * distance
-
-    def __get_fairness(self, values):
-        square_of_sum = np.square(np.sum(values))
-        sum_of_square = np.sum(np.square(values))
-        if sum_of_square == 0:
-            return 0.
-        jain_fairness_index = square_of_sum / sum_of_square / float(len(values))
-        return jain_fairness_index
 
     def __get_eff(self, value, distance):
         return value / self.maxenergy

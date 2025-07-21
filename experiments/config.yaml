@@ -3,7 +3,7 @@
 # Grid configuration
 grid_rows: 3
 grid_cols: 3
-cell_radius: 50.0  # cell radius in meters (increased for realistic cellular network)
+cell_radius: 500.0  # cell radius in meters (increased for realistic cellular network)
 
 # User configuration
 total_users: 100
@@ -11,7 +11,7 @@ user_rate_range: [0.5, 5.0]  # User rate requirements in Mbps
 
 # UAV configuration
 total_uavs: 2
-uav_altitude: 50.0  # Fixed altitude in meters
+uav_altitude: 100.0  # Fixed altitude in meters
 max_speed: 20.0  # Maximum UAV speed in m/s
 max_power: 1.0  # Maximum transmission power in Watts
 

@@ -161,49 +161,47 @@ def generate_users(output_dir, grid_rows, grid_cols, cell_radius, total_users, u
     df.to_csv(os.path.join(output_dir, 'user_info.csv'), index=False)
     print("✅ user_info.csv generated")
 
-def generate_episodes(output_dir, grid_rows, grid_cols, traffic_file, max_timesteps_per_episode, max_episodes, total_uavs):
+def generate_uav_init_positions(output_dir, grid_rows, grid_cols, total_episodes, total_uavs, cell_radius):
+    uav_data = []
+    for ep in range(total_episodes):
+        for uav_id in range(total_uavs):
+            x = float(np.random.uniform(0, grid_cols * cell_radius * 2))
+            y = float(np.random.uniform(0, grid_rows * cell_radius * 2))
+            uav_data.append({
+                'episode_id': int(ep),
+                'uav_id': int(uav_id),
+                'x_pos': x,
+                'y_pos': y
+            })
+    df = pd.DataFrame(uav_data)
+    df.to_csv(os.path.join(output_dir, 'uav_init_positions.csv'), index=False)
+    print("✅ uav_init_positions.csv generated")
+
+def generate_episodes(output_dir, grid_rows, grid_cols, traffic_file, max_timesteps_per_episode, max_episodes, cell_radius):
     n_bs = grid_rows * grid_cols
     traffic = pd.read_csv(traffic_file)
 
-    # Tính trung bình traffic theo từng BS
-    bs_means = {}
-    for bs in range(n_bs):
-        bs_means[bs] = traffic[f'BS_{bs}_DL'].mean()
-
+    bs_means = {bs: traffic[f'BS_{bs}_DL'].mean() for bs in range(n_bs)}
     episodes = []
 
     for ep in range(max_episodes):
         for t in range(max_timesteps_per_episode):
             global_timestep = (ep * max_timesteps_per_episode + t) % len(traffic)
-
             bs_status = []
             for bs in range(n_bs):
                 bs_dl = traffic.loc[global_timestep, f'BS_{bs}_DL']
-                
-                # So sánh với 50% trung bình lịch sử BS đó
                 threshold = 0.5 * bs_means[bs]
-                if bs_dl < threshold:
-                    bs_status.append(0)  # Sleep
-                else:
-                    bs_status.append(1)  # Active
-
-            # Chỉ sinh UAV ở timestep=0 của mỗi episode
-            if t == 0:
-                uav_positions = [[float(np.random.uniform(0, grid_cols * 1.0)), 
-                                  float(np.random.uniform(0, grid_rows * 1.0))] for _ in range(total_uavs)]
-            else:
-                uav_positions = None
+                bs_status.append(1 if bs_dl >= threshold else 0)
 
             episodes.append({
                 'episode_id': int(ep),
                 'timestep': int(t),
-                'bs_status': bs_status,
-                'uav_init_positions': uav_positions
+                'bs_status': bs_status
             })
 
     df = pd.DataFrame(episodes)
     df.to_csv(os.path.join(output_dir, 'episodes.csv'), index=False)
-    print("✅ episodes.csv generated with per-BS threshold sleep control")
+    print("✅ episodes.csv generated without UAV positions")
 
 def save_config(output_dir, config_dict):
     with open(os.path.join(output_dir, 'config.yaml'), 'w') as f:
@@ -215,7 +213,7 @@ if __name__ == "__main__":
     config = {
         'grid_rows': 3,
         'grid_cols': 3,
-        'cell_radius': 0.5,
+        'cell_radius': 500,
         'total_users': 100,
         'total_uavs': 2,
         'user_rate_range': [0.5, 5.0],
@@ -226,17 +224,8 @@ if __name__ == "__main__":
     max_timesteps = generate_traffic(raw_data_dir, output_dir, config['grid_rows'], config['grid_cols'])
     generate_bs(output_dir, config['grid_rows'], config['grid_cols'], config['cell_radius'])
     generate_users(output_dir, config['grid_rows'], config['grid_cols'], config['cell_radius'], config['total_users'], config['user_rate_range'])
-    
-    generate_episodes(
-        output_dir, 
-        config['grid_rows'], 
-        config['grid_cols'], 
-        os.path.join(output_dir, 'traffic.csv'),
-        config['max_timesteps_per_episode'], 
-        config['max_episodes'], 
-        config['total_uavs']
-    )
-
+    generate_uav_init_positions(output_dir, config['grid_rows'], config['grid_cols'], config['max_episodes'], config['total_uavs'], config['cell_radius'])
+    generate_episodes(output_dir, config['grid_rows'], config['grid_cols'], os.path.join(output_dir, 'traffic.csv'), config['max_timesteps_per_episode'], config['max_episodes'], config['cell_radius'])
     save_config(output_dir, config)
 
     print("✅ Data generation completed successfully!")

@@ -1,6 +1,6 @@
 grid_rows: 3
 grid_cols: 3
-cell_radius: 0.5
+cell_radius: 500
 total_users: 100
 total_uavs: 2
 user_rate_range:
