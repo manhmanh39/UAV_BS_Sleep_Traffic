@@ -13,7 +13,7 @@ user_rate_range: [0.5, 5.0]  # User rate requirements in Mbps
 total_uavs: 2
 uav_altitude: 100.0  # Fixed altitude in meters
 max_speed: 20.0  # Maximum UAV speed in m/s
-max_power: 1.0  # Maximum transmission power in Watts
+max_power: 3000.0  # Maximum transmission power in Watts
 
 # Episode configuration
 max_episodes: 100

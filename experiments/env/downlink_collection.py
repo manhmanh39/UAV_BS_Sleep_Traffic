@@ -7,6 +7,10 @@ from gym import spaces
 import pandas as pd
 import ast
 
+#TODO: - energy consumption calculation (add communication energy)
+#     - change from log-distance path loss to rician model (-> sinr, achievable rate)
+#      - contraints for actions: sum of powers sum(P_i(t)) <= P_max instead of P_i(t) <= P_max 
+
 def load_config(path):
     with open(path, 'r') as f:
         config = yaml.safe_load(f)
@@ -163,220 +167,195 @@ class DownlinkEnv(object):
         if sinr <= 0:
             return 0
         return self.B * np.log2(1 + sinr)
+    
+    def _get_active_users(self):
+        #get users that need uav 
+        active_users = []
+        for user_idx in range(len(self.user_positions)):
+            user_cell = self.user_cell_assignment[user_idx]
+            if self.bs_states[user_cell] == 0:  # BS is offf
+                active_users.append(user_idx)
 
+        return np.array(active_users)
+    
+
+    def _assign_users_to_uavs(self, uav_positions, uav_powers):
+        #assign to highest sinr
+        active_users = self._get_active_users()
+        user_assignments = {}
+        for user_idx in active_users:
+            best_uav = -1
+            best_sinr = -1
+
+            for uav_idx in range(self.n_uav):
+                sinr = self._calculate_sinr(uav_idx, user_idx, uav_positions, uav_powers)
+                if sinr > best_sinr:
+                    best_sinr = sinr
+                    best_uav = uav_idx
+
+            if best_uav != -1:
+                user_assignments[user_idx] = best_uav
+
+        return user_assignments
+    
+    def _calculate_coverage_ratio(self, uav_idx, uav_positions, uav_powers):
+        #only count if rate requirement is met
+        user_assignments = self._assign_users_to_uavs(uav_positions, uav_powers)
+        active_users = self._get_active_users()
+
+        if len(active_users) == 0:
+            return 0.0
+        
+        served_users = 0
+        for user_idx, assigned_uav in user_assignments.items():
+            if assigned_uav == uav_idx:
+                rate = self._calculate_achievable_rate(uav_idx, user_idx, uav_positions, uav_powers)
+                if rate >= self.user_demands[user_idx]:
+                    served_users += 1
+
+        return served_users / len(active_users)
+    
+    def _calculate_energy_consumption(self, uav_idx, delta_position, power):
+        #communicaion energy
+        E_comm = power * self.dt
+        #propulsion energy
+        speed = np.linalg.norm(delta_position) 
+        E_prop = self.alpha1 * (speed ** 2) + self.alpha2 * speed
+
+        return E_comm + E_prop
+    
+    def _calculate_reward(self, uav_idx, uav_positions, uav_powers, delta_position):
+        """calculate reward for single uav"""
+        #coverage ratio
+        coverage_ratio = self._calculate_coverage_ratio(uav_idx, uav_positions, uav_powers)
+
+        #energy openalty
+        energy_consumption = self._calculate_energy_consumption(uav_idx, delta_position, uav_powers[uav_idx])
+        energy_penalty = energy_consumption / self.E_max  # normalize to [0, 1]
+        #reward
+        reward = self.w1 * coverage_ratio - self.w2 * energy_penalty
+
+        return reward
+
+    def _get_observation(self, uav_idx):
+        obs = []
+        #own position and power
+        obs.extend(self.uav_positions[uav_idx])  # (x, y)
+        obs.append(self.uav_powers[uav_idx])  # power
+        #partner positions and powers
+        partner_idx = 1 - uav_idx  # 2 UAVs
+        obs.extend(self.uav_positions[partner_idx])  # (x, y)
+        obs.append(self.uav_powers[partner_idx])  
+        #all user positions (flattened)
+        obs.extend(self.user_positions.flatten())  # (x1, y1, x2, y2, ...)
+        #all user demands
+        obs.extend(self.user_demands)
+        #bs states
+        obs.extend(self.bs_states)
+
+        return np.array(obs, dtype=np.float32)
+    
+    def _check_boundaries(self, position):
+        x,y = position
+        return (
+            self.area_bounds['x_min'] <= x <= self.area_bounds['x_max'] and
+            self.area_bounds['y_min'] <= y <= self.area_bounds['y_max']
+        )
 
     def reset(self):
-        # initialize data map
-        # tr = tracker.SummaryTracker()
-        self.mapmatrix = copy.copy(self._mapmatrix)
-        # ---- original
-        # self.maptrack = np.zeros(self.mapmatrix.shape)
-        # ---- new 6-7-11-28
-        # self.maptrack = np.ones(self.mapmatrix.shape) * self.track
-        # ---- 18:43
-        self.maptrack = np.zeros(self.mapmatrix.shape)
-        # ----
-        # initialize positions of uavs
-        self.uav = [list(self.sg.V['INIT_POSITION']) for i in range(self.n)]
-        self.eff = [0.] * self.n
-        self.count = 0
-        self.zero = 0
+        self.timestep = 0
 
-        self.trace = [[] for i in range(self.n)]
-        # initialize remaining energy
-        self.energy = np.ones(self.n).astype(np.float64) * self.maxenergy
-        # initialize indicators
-        self.collection = np.zeros(self.n).astype(np.float16)
-        self.walls = np.zeros(self.n).astype(np.int16)
+        #initialize UAV positions 
+        self.uav_positions = pd.read_csv("../../UAV_BS_Sleep_Traffic/generated_data/uav_init_positions.csv")
+        self.uav_positions = self.uav_positions[['x_pos', 'y_pos']].values
 
-        # time
-        self.time_ = 0
+        #initialize UAV powers
+        self.uav_powers = np.zeros(self.n_uav)
 
-        # initialize images
-        self.state = self.__init_image()
-        # print(self.fairness)
-        # image = [np.reshape(np.array([self.image_data, self.image_position[i]]), (self.map.width, self.map.height, self.channel)) for i in range(self.n)]
-        # tr.print_diff()
-        return self.__get_state()
+        #get initial BS states
+        self.bs_states = self._get_bs_state(self.current_episode, self.timestep)
 
-    def __get_eff(self, value, distance):
-        return value / self.maxenergy
+        #get inital observations
+        obs = [self._get_observation(i) for i in range(self.n_uav)]
 
-    def __get_eff1(self, value, distance):
-        return value / (distance + self.alpha * value + self.epsilon)
+        return obs
 
-    def __cusume_energy0(self, uav, value, distance):
-        self.energy[uav] -= distance
-
-    def __cusume_energy1(self, uav, value, distance, energy=None):
-        if energy is None:
-            # ---- or
-            # self.erengy[uav] -= (distance + value * self.alpha)
-            # ---- 6-8 14:48
-            self.energy[uav] -= (self.factor * distance + self.alpha * value)
-            # ----
-        else:
-            # ---- or
-            # energy[uav] -= (distance + value * self.alpha)
-            # ---- 14:48
-            energy[uav] -= (self.factor * distance + self.alpha * value)
-            # ----
-
-    # ---- or
-    # def step(self, action):
-    #     self.count += 1
-    #     actions = copy.deepcopy(action)
-    #     normalize = self.normalize
-    #     for i in range(self.n):
-    #         for ii in actions[i]:
-    #             if np.isnan(ii):
-    #                 print('Nan')
-    #                 while True:
-    #                     pass
-    # ---- 6-8 10:57
-    def step(self, actions,indicator=None):
-        self.count += 1
-        action = copy.deepcopy(actions)
-        # 6-20 00:43
-        if np.max(action) > self.maxaction:
-            self.maxaction = np.max(action)
-            # print(self.maxaction)
-        if np.min(action) < self.minaction:
-            self.minaction = np.min(action)
-            # print(self.minaction)
-        action = np.clip(action, -1e3, 1e3)  #
-
-        normalize = self.normalize
-
-        #TODO:梯度爆炸问题不可小觑,
-        # 遇到nan直接卡掉
-        for i in range(self.n):
-            for ii in action[i]:
-                if np.isnan(ii):
-                    print('Nan')
-                    while True:
-                        pass
-
-        reward = [0] * self.n
-        self.dn = [False] * self.n  # no energy UAV
-        update_points = []
-        update_tracks = []
-        clear_uav = copy.copy(self.uav)
+    def step(self, actions):
+        #process actions
         new_positions = []
-        c_f = self.__get_fairness(self.maptrack)
-        # update positions of UAVs
-        for i in range(self.n):
-            self.trace[i].append(self.uav[i])
-            distance = np.sqrt(np.power(action[i][0], 2) + np.power(action[i][1], 2))
-            data = 0
+        new_powers = []
+        delta_positions = []
 
-            if distance <= self.maxdistance and self.energy[i] >= distance:
-                new_x = self.uav[i][0] + action[i][0]
-                new_y = self.uav[i][1] + action[i][1]
+        for i, action in enumerate(actions):
+            #action extract
+            delta_x, delta_y, power = action
+            
+            #apply contstraints
+            delta_position = np.array([delta_x, delta_y])
+            speed = np.linalg.norm(delta_position)
+            if speed > self.v_max:
+                delta_position = (delta_position / speed) * self.v_max
+
+            power = np.clip(power, 0, self.P_max)
+
+            #update position
+            new_position = self.uav_positions[i] + delta_position
+            if self._check_boundaries(new_position):
+                new_positions.append(new_position)
             else:
-                maxdistance = self.maxdistance if self.maxdistance <= self.energy[i] else self.energy[i]
-                if distance <= self.epsilon:
-                    distance = self.epsilon
-                    print("very small.")
-                new_x = self.uav[i][0] + maxdistance * action[i][0] / distance
-                new_y = self.uav[i][1] + maxdistance * action[i][1] / distance
-                distance = maxdistance
-            if distance <= self.epsilon:
-                self.zero += 1
-            self.__cusume_energy1(i, 0, distance)
-            if 0 <= new_x < self.mapx and 0 <= new_y < self.mapy and self.mapob[myint(new_x)][myint(new_y)] != self.OB:
-                new_positions.append([new_x, new_y])
-            else:
-                new_positions.append([self.uav[i][0], self.uav[i][1]])
-                reward[i] += normalize * self.pwall
-                self.walls[i] += 1
-            # calculate distances between UAV and data points
-            _pos = np.repeat([new_positions[-1]], [self.datas.shape[0]], axis=0)
-            _minus = self.datas - _pos
-            _power = np.power(_minus, 2)
-            _dis = np.sum(_power, axis=1)
-            for index, dis in enumerate(_dis):
-                if np.sqrt(dis) <= self.crange:
-                    self.maptrack[index] += self.track
-                    update_tracks.append([index, self.maptrack[index]])
-                    if self.mapmatrix[index] > 0:
-                        data += self._mapmatrix[index] * self.cspeed
-                        self.mapmatrix[index] -= self._mapmatrix[index] * self.cspeed
-                        if self.mapmatrix[index] < 0:
-                            self.mapmatrix[index] = 0.
-                        update_points.append([index, self.mapmatrix[index]])
-            # update info
-            value = data if self.energy[i] >= data * self.alpha else self.energy[i]
-            self.__cusume_energy1(i, value, 0.)
-            c_f_ = self.__get_fairness(self.maptrack)
-            # ---- 6-7
-            # 11:32
-            # reward[i] += self.__get_reward9(value, distance, c_f, c_f_)
-            # ---- 11:44
-            # reward[i] += self.__get_reward7(value, distance, c_f, c_f_)
-            # ---- 18:43
-            reward[i] += self.__get_reward9(value, distance, c_f, c_f_)
-            # ----
-            c_f = c_f_
-            self.eff[i] += self.__get_eff1(value, distance)
-            self.collection[i] += value
-            if self.energy[i] <= self.epsilon * self.maxenergy:
-                self.dn[i] = True
-        self.uav = new_positions
-        t = time.time()
-        self.__draw_image(clear_uav, update_points, update_tracks)
-        self.time_ += time.time() - t
-        # ---- or
-        reward = list(np.clip(np.array(reward) / normalize, -2., 1.))
-        # ---- new 18:43
-        # reward = list(np.clip(np.array(reward) / normalize, -1., 1.))
-        # ---- end new
-        info = None
-        state = self.__get_state()
-        for r in reward:
-            if np.isnan(r):
-                print('Rerward Nan')
-                while True:
-                    pass
-        return state, reward, sum(self.dn), info,indicator
+                #if out of bounds, keep old position
+                new_positions.append(self.uav_positions[i])
+                delta_position = np.array([0, 0])  # no movement
 
-    def render(self):
-        print('coding...')
+            new_powers.append(power)
+            delta_positions.append(delta_position)
+
+        #update UAV positions and powers
+        self.uav_positions = np.array(new_positions)
+        self.uav_powers = np.array(new_powers)
+
+        #update BS states
+        self.bs_states = self._get_bs_state(self.current_episode, self.timestep)
+
+        #calculate rewards
+        rewards = []
+        for i in range(self.n_uav):
+            reward = self._calculate_reward(i, self.uav_positions, self.uav_powers, delta_positions[i])
+            rewards.append(reward)
+
+        #check if episode is done
+        done = self.timestep >= self.max_timesteps
+        if done:
+            self.current_episode += 1
+            self.timestep = 0
+        else:
+            self.timestep += 1
+
+        #get new observations
+        obs = [self._get_observation(i) for i in range(self.n_uav)]
+        #info dictionary
+        info = {
+            'coverage_ratios': [self._calculate_coverage_ratio(i, self.uav_positions, self.uav_powers) for i in range(self.n_uav)],
+            'active_users': len(self._get_active_users()),
+            'timestep': self.timestep,
+        }
+
+        return obs, rewards, done, info
+
+
+    def render(self, mode='human'):
+        #(optional
+        print(f"Timestep: {self.timestep}")
+        print(f"UAV Positions: {self.uav_positions}")
+        print(f"UAV Powers: {self.uav_powers}")
+        print(f"BS States: {self.bs_states}")
+        print(f"Active Users: {len(self._get_active_users())}")
+        print("-" * 50)
+
+    def close(self):
+        # (optional)
+        pass
 
     @property
-    def leftrewards(self):
-        return np.sum(self.mapmatrix) / self.totaldata
-
-    @property
-    def efficiency(self):
-        return np.sum(self.collection / self.totaldata) / (
-                    self.n - np.sum(self.normal_energy)) * self.collection_fairness
-
-    @property
-    def normal_energy(self):
-        return list(np.array(self.energy) / self.maxenergy)
-
-    @property
-    def fairness(self):
-        square_of_sum = np.square(np.sum(self.mapmatrix[:]))
-        sum_of_square = np.sum(np.square(self.mapmatrix[:]))
-        fairness = square_of_sum / sum_of_square / float(len(self.mapmatrix))
-        return fairness
-
-    @property
-    def collection_fairness(self):
-        collection = self._mapmatrix - self.mapmatrix
-        square_of_sum = np.square(np.sum(collection))
-        sum_of_square = np.sum(np.square(collection))
-        fairness = square_of_sum / sum_of_square / float(len(collection))
-        return fairness
-
-    @property
-    def normal_collection_fairness(self):
-        collection = self._mapmatrix - self.mapmatrix
-        for index, i in enumerate(collection):
-            collection[index] = i / self._mapmatrix[index]
-        square_of_sum = np.square(np.sum(collection))
-        sum_of_square = np.sum(np.square(collection))
-        fairness = square_of_sum / sum_of_square / float(len(collection))
-        return fairness
+    def n(self):
+        return self.n_uav
