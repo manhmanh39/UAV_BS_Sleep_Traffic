@@ -7,8 +7,7 @@ from gym import spaces
 import pandas as pd
 import ast
 
-#TODO: - energy consumption calculation (add communication energy)
-#     - change from log-distance path loss to rician model (-> sinr, achievable rate)
+#TODO:  - change from log-distance path loss to rician model (-> sinr, achievable rate)
 #      - contraints for actions: sum of powers sum(P_i(t)) <= P_max instead of P_i(t) <= P_max 
 
 def load_config(path):
