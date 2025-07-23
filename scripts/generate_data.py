@@ -41,11 +41,8 @@ def traffic_weaver_weights(timesteps, bs_id, total_bs, seasonal_scale=0.2, trend
     trend = trend_scale * (bs_id / total_bs) * t / timesteps
     noise = np.random.normal(0, noise_scale, timesteps)
 
-    # Thêm randomization mạnh: nhân thêm phân phối ngẫu nhiên
     random_factor = np.random.exponential(scale=1.0, size=timesteps)  # Exponential để tạo nhiều giá trị nhỏ và một số giá trị lớn bất thường
-    # Hoặc nếu muốn đơn giản hơn, dùng uniform cũng được:
-    # random_factor = np.random.uniform(0.5, 1.5, size=timesteps)
-
+    
     weights = (1 + seasonal + trend + noise) * random_factor
     weights = np.clip(weights, 0, None)
     return weights
