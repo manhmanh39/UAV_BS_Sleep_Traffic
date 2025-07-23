@@ -160,15 +160,17 @@ def generate_users(output_dir, grid_rows, grid_cols, cell_radius, total_users, u
 
 def generate_uav_init_positions(output_dir, grid_rows, grid_cols, total_episodes, total_uavs, cell_radius):
     uav_data = []
+    start_point = (0, 0)  # Starting point for UAVs
     for ep in range(total_episodes):
         for uav_id in range(total_uavs):
-            x = float(np.random.uniform(0, grid_cols * cell_radius * 2))
-            y = float(np.random.uniform(0, grid_rows * cell_radius * 2))
+            x,y = start_point
             uav_data.append({
                 'episode_id': int(ep),
                 'uav_id': int(uav_id),
-                'x_pos': x,
-                'y_pos': y
+                'x_init': x,
+                'y_init': y,
+                'x_final': x,
+                'y_final': y,
             })
     df = pd.DataFrame(uav_data)
     df.to_csv(os.path.join(output_dir, 'uav_init_positions.csv'), index=False)
