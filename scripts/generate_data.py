@@ -41,11 +41,8 @@ def traffic_weaver_weights(timesteps, bs_id, total_bs, seasonal_scale=0.2, trend
     trend = trend_scale * (bs_id / total_bs) * t / timesteps
     noise = np.random.normal(0, noise_scale, timesteps)
 
-    # Thêm randomization mạnh: nhân thêm phân phối ngẫu nhiên
     random_factor = np.random.exponential(scale=1.0, size=timesteps)  # Exponential để tạo nhiều giá trị nhỏ và một số giá trị lớn bất thường
-    # Hoặc nếu muốn đơn giản hơn, dùng uniform cũng được:
-    # random_factor = np.random.uniform(0.5, 1.5, size=timesteps)
-
+    
     weights = (1 + seasonal + trend + noise) * random_factor
     weights = np.clip(weights, 0, None)
     return weights
@@ -161,21 +158,23 @@ def generate_users(output_dir, grid_rows, grid_cols, cell_radius, total_users, u
     df.to_csv(os.path.join(output_dir, 'user_info.csv'), index=False)
     print("✅ user_info.csv generated")
 
-def generate_uav_init_positions(output_dir, grid_rows, grid_cols, total_episodes, total_uavs, cell_radius):
+def generate_uav_home_positions(output_dir, grid_rows, grid_cols, total_episodes, total_uavs, cell_radius):
     uav_data = []
+    home_point = (0, 0)  # Starting point for UAVs
     for ep in range(total_episodes):
         for uav_id in range(total_uavs):
-            x = float(np.random.uniform(0, grid_cols * cell_radius * 2))
-            y = float(np.random.uniform(0, grid_rows * cell_radius * 2))
+            x,y = home_point
             uav_data.append({
                 'episode_id': int(ep),
                 'uav_id': int(uav_id),
-                'x_pos': x,
-                'y_pos': y
+                'x_init': x,
+                'y_init': y,
+                'x_final': x,
+                'y_final': y,
             })
     df = pd.DataFrame(uav_data)
-    df.to_csv(os.path.join(output_dir, 'uav_init_positions.csv'), index=False)
-    print("✅ uav_init_positions.csv generated")
+    df.to_csv(os.path.join(output_dir, 'uav_home_positions.csv'), index=False)
+    print("✅ uav_home_positions.csv generated")
 
 def generate_episodes(output_dir, grid_rows, grid_cols, traffic_file, max_timesteps_per_episode, max_episodes, cell_radius):
     n_bs = grid_rows * grid_cols
@@ -224,7 +223,7 @@ if __name__ == "__main__":
     max_timesteps = generate_traffic(raw_data_dir, output_dir, config['grid_rows'], config['grid_cols'])
     generate_bs(output_dir, config['grid_rows'], config['grid_cols'], config['cell_radius'])
     generate_users(output_dir, config['grid_rows'], config['grid_cols'], config['cell_radius'], config['total_users'], config['user_rate_range'])
-    generate_uav_init_positions(output_dir, config['grid_rows'], config['grid_cols'], config['max_episodes'], config['total_uavs'], config['cell_radius'])
+    generate_uav_home_positions(output_dir, config['grid_rows'], config['grid_cols'], config['max_episodes'], config['total_uavs'], config['cell_radius'])
     generate_episodes(output_dir, config['grid_rows'], config['grid_cols'], os.path.join(output_dir, 'traffic.csv'), config['max_timesteps_per_episode'], config['max_episodes'], config['cell_radius'])
     save_config(output_dir, config)
 

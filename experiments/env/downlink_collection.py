@@ -8,7 +8,8 @@ import pandas as pd
 import ast
 
 #TODO:  - change from log-distance path loss to rician model (-> sinr, achievable rate)
-#      - contraints for actions: sum of powers sum(P_i(t)) <= P_max instead of P_i(t) <= P_max 
+#       - contraints for actions: sum of powers sum(P_i(t)) <= P_max instead of P_i(t) <= P_max 
+#       - constraint for uav to return final point after reach p_max
 
 def load_config(path):
     with open(path, 'r') as f:
