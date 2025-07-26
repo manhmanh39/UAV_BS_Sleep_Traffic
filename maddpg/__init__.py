@@ -1,15 +1,15 @@
 class AgentTrainer(object):
     def __init__(self, name, model, obs_shape, act_space, args):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def action(self, obs):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def process_experience(self, obs, act, rew, new_obs, done, terminal):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def preupdate(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def update(self, agents):
-        raise NotImplemented()
+        raise NotImplementedError()

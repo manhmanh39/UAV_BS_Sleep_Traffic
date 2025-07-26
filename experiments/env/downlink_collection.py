@@ -8,8 +8,6 @@ import pandas as pd
 import ast
 
 #TODO:  - change from log-distance path loss to rician model (-> sinr, achievable rate)
-#       - contraints for actions: sum of powers sum(P_i(t)) <= P_max instead of P_i(t) <= P_max 
-#       - constraint for uav to return final point after reach p_max
 
 def load_config(path):
     with open(path, 'r') as f:
@@ -89,6 +87,8 @@ class DownlinkEnv(object):
         #initialize episode variables
         self.current_episode = 0
         self.timestep = 0
+        self.cummulative_power = np.zeros(self.n_uav)
+        self.force_return = np.array([False, False])
 
     def _get_bs_state(self, episode_idx, timestep):
         # Get the base station state for the given episode and timestep
@@ -264,10 +264,12 @@ class DownlinkEnv(object):
 
     def reset(self):
         self.timestep = 0
+        self.cummulative_power = np.zeros(self.n_uav)
+        self.force_return = np.array([False, False])
 
         #initialize UAV positions 
-        self.uav_positions = pd.read_csv("../../UAV_BS_Sleep_Traffic/generated_data/uav_init_positions.csv")
-        self.uav_positions = self.uav_positions[['x_pos', 'y_pos']].values
+        self.uav_positions = np.array([[0, 0], [0, 0]]) #shape (n_uav,2)
+        self.final_uav_positions = np.array([[0, 0], [0, 0]])
 
         #initialize UAV powers
         self.uav_powers = np.zeros(self.n_uav)
@@ -298,6 +300,12 @@ class DownlinkEnv(object):
 
             power = np.clip(power, 0, self.P_max)
 
+            #update cummulative power for each uav
+            self.cummulative_power[i] += power
+            if self.cummulative_power >= self.P_max:
+                self.force_return[i] = True
+                continue
+
             #update position
             new_position = self.uav_positions[i] + delta_position
             if self._check_boundaries(new_position):
@@ -311,8 +319,13 @@ class DownlinkEnv(object):
             delta_positions.append(delta_position)
 
         #update UAV positions and powers
-        self.uav_positions = np.array(new_positions)
-        self.uav_powers = np.array(new_powers)
+        for i in range(len(self.n_uav)):
+            if self.force_return[i] == True:
+                self.uav_positions = self.final_uav_positions.copy()
+                self.uav_powers = np.zeros(self.n_uav)
+            else:
+                self.uav_positions = np.array(new_positions)
+                self.uav_powers = np.array(new_powers)
 
         #update BS states
         self.bs_states = self._get_bs_state(self.current_episode, self.timestep)
@@ -325,6 +338,8 @@ class DownlinkEnv(object):
 
         #check if episode is done
         done = self.timestep >= self.max_timesteps
+        if np.all(self.force_return):
+            done = True
         if done:
             self.current_episode += 1
             self.timestep = 0
